@@ -3,12 +3,12 @@
 """
 colab_app.py  —  EmbedSLR v3.0 Colab GUI
 ==========================================
-Simple ipywidgets interface for Google Colab.
-
 Usage::
     !pip install -q git+https://github.com/s-matysik/EmbedSLR_v3.0.git
     from embedslr.colab_app import run
     run()
+    # or with a pre-uploaded file:
+    run("/content/my_data.csv")
 """
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-# lightweight internal imports
 from .config import ScoringConfig
 from .advanced_scoring import rank_with_advanced_scoring
 from .mcda_validation import (
@@ -31,29 +30,20 @@ from .mcda_validation import (
     generate_validation_report,
 )
 
-
-# =====================================================================
-#  MCDA VALIDATION  (callable without GUI)
-# =====================================================================
-
 METHOD_NAMES = {"linear": "L-Scoring", "zscore": "Z-Scoring",
                 "linear_plus": "L-Scoring+"}
 
 
+# =====================================================================
+#  MCDA VALIDATION  (callable without GUI)
+# =====================================================================
 def run_mcda_validation(csv_path, method="linear_plus",
                         w_sem=0.40, w_kw=0.25, w_ref=0.25, w_cit=0.10,
                         n_mc=1000, n_bs=500,
                         top_kw=5, top_ref=15,
                         bonus_start_z=2.0, bonus_full_z=4.0,
                         log_fn=None):
-    """
-    Run 10 MCDA tests on the chosen scoring method.
-
-    Parameters
-    ----------
-    method : str
-        "linear" (L-Scoring), "zscore" (Z-Scoring), "linear_plus" (L-Scoring+)
-    """
+    """Run 10 MCDA tests. method: 'linear' | 'zscore' | 'linear_plus'"""
     def _log(msg):
         if log_fn: log_fn(msg)
 
@@ -68,23 +58,15 @@ def run_mcda_validation(csv_path, method="linear_plus",
     bw = {k: v/s for k, v in raw_w.items()}
     criteria = list(bw.keys())
 
-    base_cfg = ScoringConfig(
-        method=method, weights=bw,
-        top_keywords=top_kw, top_references=top_ref,
-        bonus_start_z=bonus_start_z, bonus_full_z=bonus_full_z)
-
-    # Build scorer wrapping rank_with_advanced_scoring
     method_col = {"linear": "score_linear", "zscore": "score_zscore",
                   "linear_plus": "score_linear_plus"}[method]
 
     def scorer(df_in, w):
-        cfg = ScoringConfig(
-            method=method, weights=w,
-            top_keywords=top_kw, top_references=top_ref,
-            bonus_start_z=bonus_start_z, bonus_full_z=bonus_full_z)
+        cfg = ScoringConfig(method=method, weights=w,
+                            top_keywords=top_kw, top_references=top_ref,
+                            bonus_start_z=bonus_start_z, bonus_full_z=bonus_full_z)
         return rank_with_advanced_scoring(df_in, cfg).df[method_col]
 
-    # Rankings for all 3 methods (for cross-method)
     all_rankings = {}
     for m in ["linear", "zscore", "linear_plus"]:
         cfg_m = ScoringConfig(method=m, weights=bw,
@@ -120,6 +102,9 @@ def run_mcda_validation(csv_path, method="linear_plus",
             [1.0,1.5,2.0,2.5,3.0,3.5], bonus_start_z, bw)}
 
     _log("TEST 5/10: Precision / Recall / F1...")
+    base_cfg = ScoringConfig(method=method, weights=bw,
+                              top_keywords=top_kw, top_references=top_ref,
+                              bonus_start_z=bonus_start_z, bonus_full_z=bonus_full_z)
     res0 = rank_with_advanced_scoring(df, base_cfg)
     scores = res0.df[method_col]
     relevant = set(scores[scores >= scores.quantile(0.80)].index.tolist())
@@ -189,16 +174,49 @@ def run_mcda_validation(csv_path, method="linear_plus",
 # =====================================================================
 #  COLAB GUI
 # =====================================================================
+def run(csv_path: Optional[str] = None):
+    """
+    Launch EmbedSLR GUI in Google Colab.
 
-def run():
-    """Launch EmbedSLR GUI in Google Colab."""
+    Args:
+        csv_path: Path to Scopus CSV. If None, triggers files.upload() dialog.
+    """
     import ipywidgets as W
-    from IPython.display import display, clear_output, HTML
+    from IPython.display import display, HTML
 
-    # ── state ────────────────────────────────────────────────────────
-    state = {"csv_path": None}
+    # ── Step 1: Get CSV path ─────────────────────────────────────────
+    if csv_path and os.path.isfile(csv_path):
+        pass  # use provided path
+    else:
+        # Try Colab upload
+        try:
+            from google.colab import files
+            print("Select your Scopus CSV file:")
+            uploaded = files.upload()
+            if not uploaded:
+                print("No file uploaded. Call run('/path/to/file.csv') to retry.")
+                return
+            name = list(uploaded.keys())[0]
+            csv_path = f"/content/{name}"
+            if not os.path.exists(csv_path):
+                with open(csv_path, "wb") as f:
+                    f.write(uploaded[name])
+        except ImportError:
+            print("Not in Colab. Pass csv_path: run('/path/to/file.csv')")
+            return
+        except Exception as e:
+            print(f"Upload failed: {e}. Pass csv_path: run('/path/to/file.csv')")
+            return
 
-    # ── output areas ─────────────────────────────────────────────────
+    # Verify file
+    try:
+        df_check = pd.read_csv(csv_path, encoding='utf-8-sig', nrows=3)
+        n_total = sum(1 for _ in open(csv_path, encoding='utf-8-sig')) - 1
+    except Exception as e:
+        print(f"Cannot read CSV: {e}")
+        return
+
+    # ── Output areas ─────────────────────────────────────────────────
     log_out = W.Output(layout=W.Layout(
         max_height="250px", overflow_y="auto",
         border="1px solid #ccc", padding="4px", width="100%"))
@@ -209,37 +227,7 @@ def run():
     def _log(msg):
         with log_out: print(msg)
 
-    # ── Step 1: Upload ───────────────────────────────────────────────
-    btn_upload = W.Button(description="Upload Scopus CSV",
-                           button_style="warning", icon="upload",
-                           layout=W.Layout(width="220px", height="36px"))
-    upload_label = W.HTML(value="<i>No file uploaded yet.</i>")
-
-    def _do_upload(b):
-        try:
-            from google.colab import files
-            uploaded = files.upload()
-            if uploaded:
-                name = list(uploaded.keys())[0]
-                state["csv_path"] = f"/content/{name}" if not name.startswith("/") else name
-                # save if needed
-                if not os.path.exists(state["csv_path"]):
-                    with open(state["csv_path"], "wb") as f:
-                        f.write(uploaded[name])
-                n = len(pd.read_csv(state["csv_path"], nrows=5, encoding="utf-8-sig"))
-                total = len(pd.read_csv(state["csv_path"], encoding="utf-8-sig"))
-                upload_label.value = (
-                    f"<b style='color:green'>Uploaded: {name} "
-                    f"({total} rows)</b>")
-                _log(f"CSV loaded: {name} ({total} publications)")
-        except ImportError:
-            _log("google.colab not available. Set state['csv_path'] manually.")
-        except Exception as e:
-            _log(f"Upload error: {e}")
-
-    btn_upload.on_click(_do_upload)
-
-    # ── Step 2: MCDA Settings ────────────────────────────────────────
+    # ── Widgets ──────────────────────────────────────────────────────
     method_w = W.RadioButtons(
         options=[("L-Scoring (rank-based weighted sum)", "linear"),
                  ("Z-Scoring (z-standardized weighted sum)", "zscore"),
@@ -261,7 +249,6 @@ def run():
     w_cit = W.FloatSlider(value=0.10, min=0.05, max=0.80, step=0.05,
                            description="citations", readout_format=".2f",
                            style={"description_width": "80px"})
-
     mc_w = W.IntSlider(value=1000, min=100, max=5000, step=100,
                         description="MC samples", style={"description_width": "90px"})
     bs_w = W.IntSlider(value=500, min=50, max=2000, step=50,
@@ -273,7 +260,6 @@ def run():
                            description="bonus_full_z", readout_format=".1f",
                            style={"description_width": "100px"})
 
-    # ── Step 3: Run ──────────────────────────────────────────────────
     btn_run = W.Button(description="Run 10 MCDA Tests",
                         button_style="success", icon="play",
                         layout=W.Layout(width="220px", height="40px"))
@@ -281,16 +267,11 @@ def run():
     def _do_run(b):
         log_out.clear_output()
         report_out.clear_output()
-
-        if not state["csv_path"]:
-            _log("ERROR: Upload a CSV first.")
-            return
-
         btn_run.disabled = True
         btn_run.description = "Running..."
         try:
             report, zip_path = run_mcda_validation(
-                csv_path=state["csv_path"],
+                csv_path=csv_path,
                 method=method_w.value,
                 w_sem=w_sem.value, w_kw=w_kw.value,
                 w_ref=w_ref.value, w_cit=w_cit.value,
@@ -300,48 +281,40 @@ def run():
             with report_out:
                 print(report)
             try:
-                from google.colab import files as gfiles
-                gfiles.download(zip_path)
+                from google.colab import files as gf
+                gf.download(zip_path)
             except:
-                _log("ZIP saved locally (auto-download unavailable).")
+                _log("(auto-download unavailable)")
         except Exception as e:
             _log(f"ERROR: {e}")
-            import traceback
-            _log(traceback.format_exc())
+            import traceback; _log(traceback.format_exc())
         finally:
             btn_run.disabled = False
             btn_run.description = "Run 10 MCDA Tests"
 
     btn_run.on_click(_do_run)
 
-    # ── Layout ───────────────────────────────────────────────────────
-    display(HTML("""
+    # ── Display ──────────────────────────────────────────────────────
+    display(HTML(f"""
     <h2>EmbedSLR v3.0 — MCDA Sensitivity & Robustness</h2>
-    <p>10 tests evaluating multi-criteria ranking stability.<br>
+    <p><b>File:</b> <code>{os.path.basename(csv_path)}</code> ({n_total} publications)<br>
     <i>Methodology: Więckowski & Sałabun (2023), Więckowski et al. (2025)</i></p>
     <hr>
+    <h4>Select MCDA method to validate</h4>
     """))
-
-    display(HTML("<h4>Step 1: Upload data</h4>"))
-    display(W.HBox([btn_upload, upload_label]))
-
-    display(HTML("<h4>Step 2: Select MCDA method</h4>"))
     display(method_w)
 
-    display(HTML("<h4>Step 3: Criteria weights</h4>"
-                 "<p><i>Auto-normalized to sum=1.</i></p>"))
+    display(HTML("<h4>Criteria weights</h4><p><i>Auto-normalized.</i></p>"))
     display(W.VBox([w_sem, w_kw, w_ref, w_cit]))
 
-    display(HTML("<h4>Step 4: Parameters</h4>"))
+    display(HTML("<h4>Parameters</h4>"))
     display(W.HBox([mc_w, bs_w]))
     display(W.HBox([bsz_w, bfz_w]))
 
-    display(HTML("<h4>Step 5: Run</h4>"))
+    display(HTML("<hr>"))
     display(btn_run)
-
     display(HTML("<h4>Log</h4>"))
     display(log_out)
-
     display(HTML("<h4>Validation Report</h4>"))
     display(report_out)
 
