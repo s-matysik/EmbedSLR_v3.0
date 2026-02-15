@@ -1,0 +1,4 @@
+include LICENSE
+include README.md
+recursive-include examples *.csv *.ipynb
+recursive-include docs *

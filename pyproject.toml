@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "embedslr"
+version = "3.0.0"
+description = "Embedding-based screening, MCDA ranking, and bibliometrics for SLRs"
+authors = [{name="EmbedSLR Dev Team", email="sebsatian.matysik@usz.edu.pl"}]
+license = {text="MIT"}
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "pandas>=2.0",
+  "numpy>=1.22",
+  "scipy>=1.10",
+  "scikit-learn>=1.2",
+  "sentence-transformers>=2.5",
+  "openai>=1.14",
+  "cohere~=5.3",
+  "requests>=2.31",
+  "tqdm>=4.66",
+  "gradio>=4.0",
+]
+
+[project.optional-dependencies]
+colab = ["ipywidgets>=8.1"]
+
+[project.scripts]
+embedslr = "embedslr.cli:main"
+embedslr-wizard = "embedslr.wizard:main"
+
+[project.urls]
+Homepage = "https://github.com/s-matysik/EmbedSLR"
+Repository = "https://github.com/s-matysik/EmbedSLR"
