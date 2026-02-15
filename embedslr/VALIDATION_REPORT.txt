@@ -1,0 +1,99 @@
+========================================================================
+  MCDA VALIDATION REPORT -- EmbedSLR 2.0
+  Methodology: Wieckowski & Salabun (2023); Wieckowski et al. (2025)
+========================================================================
+
+-- TEST 1: Weight Sensitivity (OAT) --
+  Mean WS: 0.9448    Min WS: 0.8289
+  Mean rho:  0.9851    Mean tau: 0.9179
+  Most sensitive criterion: semantic
+  Most stable criterion:    citations
+
+  Per-criterion breakdown:
+    citations        mean_WS=0.9792  min_WS=0.9625  std=0.0115
+    keywords         mean_WS=0.9455  min_WS=0.9005  std=0.0306
+    references       mean_WS=0.9477  min_WS=0.9042  std=0.0293
+    semantic         mean_WS=0.9068  min_WS=0.8289  std=0.0496
+
+-- TEST 2: Criteria Removal --
+  Critical criterion:  semantic
+  Most resilient:      citations
+
+  Individual removal impact:
+    Remove semantic        -> WS=0.7117  rho=0.7451
+    Remove keywords        -> WS=0.8253  rho=0.9057
+    Remove references      -> WS=0.8257  rho=0.9042
+    Remove citations       -> WS=0.9292  rho=0.9859
+
+  Sequential removal:
+    Step 1: -citations       -> WS=0.9292  remaining=3
+    Step 2: -keywords        -> WS=0.7991  remaining=2
+    Step 3: -references      -> WS=0.7007  remaining=1
+
+-- TEST 3: Cross-Method Correlation --
+  L-Scoring       <-> Z-Scoring        WS=0.9274  rho=0.9830  tau=0.8903
+  L-Scoring       <-> L-Scoring+       WS=0.9231  rho=0.9776  tau=0.9510
+  Z-Scoring       <-> L-Scoring+       WS=0.9100  rho=0.9730  tau=0.8742
+
+-- TEST 4: Parameter Sensitivity --
+  Parameter: bonus_start_z
+    value=     1.0  WS=0.8415  rho=0.9326
+    value=     1.5  WS=0.9021  rho=0.9765
+    value=     2.0  WS=1.0000  rho=1.0000 <- baseline
+    value=     2.5  WS=0.9583  rho=0.9897
+    value=     3.0  WS=0.9467  rho=0.9870
+    value=     3.5  WS=0.9369  rho=0.9840
+  Parameter: top_keywords_k
+    value=       3  WS=1.0000  rho=1.0000
+    value=       5  WS=1.0000  rho=1.0000 <- baseline
+    value=       7  WS=1.0000  rho=1.0000
+    value=      10  WS=1.0000  rho=1.0000
+    value=      15  WS=1.0000  rho=1.0000
+
+-- TEST 5: Precision / Recall / F1 @ K --
+  L-Scoring             K=5:P=1.000/R=0.042/F1=0.080  K=10:P=1.000/R=0.083/F1=0.154  K=20:P=1.000/R=0.167/F1=0.286  K=50:P=1.000/R=0.417/F1=0.588  K=100:P=0.990/R=0.825/F1=0.900
+  Z-Scoring             K=5:P=1.000/R=0.042/F1=0.080  K=10:P=1.000/R=0.083/F1=0.154  K=20:P=1.000/R=0.167/F1=0.286  K=50:P=0.980/R=0.408/F1=0.576  K=100:P=0.930/R=0.775/F1=0.845
+  L-Scoring+            K=5:P=1.000/R=0.042/F1=0.080  K=10:P=0.600/R=0.050/F1=0.092  K=20:P=0.650/R=0.108/F1=0.186  K=50:P=0.820/R=0.342/F1=0.482  K=100:P=0.860/R=0.717/F1=0.782
+  random_baseline       K=5:P=0.201/R=0.008/F1=0.016  K=10:P=0.201/R=0.017/F1=0.031  K=20:P=0.201/R=0.034/F1=0.057  K=50:P=0.201/R=0.084/F1=0.118  K=100:P=0.201/R=0.168/F1=0.183
+
+-- TEST 6: Bootstrap Stability --
+  Top- 5: stability=0.777+/-0.025  rho mean=1.000  95%CI=[1.000, 1.000]
+  Top-10: stability=0.786+/-0.023  rho mean=1.000  95%CI=[1.000, 1.000]
+  Top-20: stability=0.791+/-0.025  rho mean=1.000  95%CI=[1.000, 1.000]
+
+-- TEST 7: Monte Carlo Weight Space --
+  N samples: 500
+  WS:  mean=0.7776  std=0.0664  min=0.6624  P5=0.6846
+  rho: mean=0.8034  min=0.4614
+
+-- TEST 8: Rank Reversal --
+  Total reversals: 0  Overall rate: 0.0000
+  Removal of top alternatives:
+    Removed top 1: reversals=0/190 (0.00%)  rho_remaining=1.0000
+    Removed top 2: reversals=0/190 (0.00%)  rho_remaining=1.0000
+    Removed top 3: reversals=0/190 (0.00%)  rho_remaining=1.0000
+    Removed top 4: reversals=0/190 (0.00%)  rho_remaining=1.0000
+    Removed top 5: reversals=0/190 (0.00%)  rho_remaining=1.0000
+  Addition of alternatives:
+    Added 1: reversals=0/190 (0.00%)
+    Added 2: reversals=0/190 (0.00%)
+    Added 3: reversals=0/190 (0.00%)
+
+-- TEST 9: Normalization Comparison --
+  minmax   <-> max       WS=0.9135  rho=0.9753
+  minmax   <-> sum       WS=0.7499  rho=0.8068
+  minmax   <-> vector    WS=0.8007  rho=0.8770
+  minmax   <-> zscore    WS=0.9203  rho=0.9805
+  max      <-> sum       WS=0.8108  rho=0.8961
+  max      <-> vector    WS=0.8719  rho=0.9526
+  max      <-> zscore    WS=0.9351  rho=0.9882
+  sum      <-> vector    WS=0.9265  rho=0.9850
+  sum      <-> zscore    WS=0.7898  rho=0.8707
+  vector   <-> zscore    WS=0.8426  rho=0.9272
+
+-- TEST 10: Compromise Ranking (Borda + Copeland) --
+  L-Scoring        Borda WS=0.9592 rho=0.9942  Copeland WS=0.9741 rho=0.9973
+  Z-Scoring        Borda WS=0.9566 rho=0.9926  Copeland WS=0.9462 rho=0.9865
+  L-Scoring+       Borda WS=0.9435 rho=0.9907  Copeland WS=0.9470 rho=0.9878
+
+========================================================================
