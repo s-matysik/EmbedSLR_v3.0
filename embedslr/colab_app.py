@@ -1,28 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-colab_app.py  —  EmbedSLR v3.0 Wizard (Gradio)
-================================================
-Tab 1 : Multi-Embedding Wizard   (consensus ranking)
-Tab 2 : MCDA Sensitivity & Robustness  (10 tests)
+colab_app.py  —  EmbedSLR v3.0 Colab GUI (ipywidgets)
+======================================================
+Native Colab GUI using ipywidgets. No Gradio dependency.
 
-Usage (Colab):
-    !pip install -q git+https://github.com/s-matysik/EmbedSLR_v3.0.git
+Tab 1: Multi-Embedding Wizard   (consensus ranking)
+Tab 2: MCDA Sensitivity & Robustness  (10 tests, selectable method)
+
+Usage:
     from embedslr.colab_app import run
     run()
 """
 from __future__ import annotations
 
-import io, json, os, time, textwrap, zipfile
+import io, json, os, sys, time, textwrap, zipfile
 import itertools as it
 from typing import List, Tuple, Dict, Optional
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-# ── lightweight internal imports (no GPU libs needed) ────────────────
-from .io import autodetect_columns, combine_title_abstract
+# ── lightweight internal imports ─────────────────────────────────────
+from .config import ScoringConfig, ColumnMap
 from .advanced_scoring import (
+    rank_with_advanced_scoring, ScoringResult,
     parse_keywords_cell, parse_references_cell,
     frequency_map, per_item_topk_sum,
 )
@@ -35,12 +38,9 @@ from .mcda_validation import (
     generate_validation_report,
 )
 
-# ── heavy imports (ensemble, embeddings) — deferred to first call ────
-# Gradio is imported only inside build_demo() / run().
-
 
 # =====================================================================
-#  MODEL CATALOG
+#  MODEL CATALOG  (Tab 1)
 # =====================================================================
 MODEL_CATALOG: Dict[str, str] = {
     "SBERT - all-MiniLM-L12-v2":       "sbert:sentence-transformers/all-MiniLM-L12-v2",
@@ -52,7 +52,6 @@ MODEL_CATALOG: Dict[str, str] = {
     "Jina - jina-embeddings-v3":        "jina:jina-embeddings-v3",
     "Cohere - embed-english-v3.0":      "cohere:embed-english-v3.0",
 }
-
 RECOMMENDED_DEFAULTS = [
     "SBERT - all-MiniLM-L12-v2",
     "SBERT - all-mpnet-base-v2",
@@ -62,19 +61,8 @@ RECOMMENDED_DEFAULTS = [
 
 
 # =====================================================================
-#  TAB 1 — WIZARD helpers
+#  Tab 1 — Multi-Embedding Wizard  (logic only, no UI)
 # =====================================================================
-def _to_models(labels):
-    from .ensemble import ModelSpec
-    return [ModelSpec(*MODEL_CATALOG[l].split(":", 1)) for l in labels]
-
-def _combo_tag(specs):
-    return "__".join(s.label.replace("/", "_") for s in specs)
-
-def _hit_dist(df):
-    vc = df["hit_count"].value_counts().sort_index(ascending=False)
-    return "; ".join(f"{int(k)}:{int(v)}" for k, v in vc.items() if k > 0)
-
 def _set_keys(ok, ck, nk):
     if ok: os.environ["OPENAI_API_KEY"] = ok.strip()
     if ck: os.environ["COHERE_API_KEY"] = ck.strip()
@@ -82,10 +70,13 @@ def _set_keys(ok, ck, nk):
 
 
 def run_wizard(csv_path, query, model_labels, sizes, top_k, agg,
-               ok, ck, nk, progress=None):
-    import gradio as gr
-    from .ensemble import run_ensemble, per_group_bibliometrics, build_embeddings_cache
+               ok="", ck="", nk="", log_fn=None):
+    from .io import autodetect_columns, combine_title_abstract
+    from .ensemble import ModelSpec, run_ensemble, per_group_bibliometrics, build_embeddings_cache
     from .bibliometrics import full_report
+
+    def _log(msg):
+        if log_fn: log_fn(msg)
 
     t0 = time.time()
     _set_keys(ok, ck, nk)
@@ -93,221 +84,228 @@ def run_wizard(csv_path, query, model_labels, sizes, top_k, agg,
     df = pd.read_csv(csv_path)
     title_col, abs_col = autodetect_columns(df)
     df["combined_text"] = combine_title_abstract(df, title_col, abs_col)
-    if df.empty:      raise gr.Error("CSV is empty.")
-    if not model_labels or len(model_labels) < 2:
-        raise gr.Error("Select at least 2 models.")
-    models = _to_models(model_labels)
+
+    models = []
+    for l in model_labels:
+        prov, mid = MODEL_CATALOG[l].split(":", 1)
+        models.append(ModelSpec(prov, mid))
 
     sizes_int = sorted({int(s) for s in sizes})
     sizes_int = [k for k in sizes_int if 2 <= k <= min(5, len(models))]
-    if not sizes_int:
-        raise gr.Error("Combination sizes exceed number of selected models.")
 
-    if progress: progress(0, desc="Computing embeddings...")
-    cache = build_embeddings_cache(df, "combined_text", query, models,
-                                    progress=progress)
+    _log("Computing embeddings (cached)...")
+    cache = build_embeddings_cache(df, "combined_text", query, models)
 
     combos = []
     for k in sizes_int:
         combos.extend(list(it.combinations(models, k)))
 
     rows = []
-    _out = "/content" if os.path.isdir("/content") else "/tmp"
-    zip_path = f"{_out}/embedslr_ensemble_{int(time.time())}.zip"
+    out_dir = "/content" if os.path.isdir("/content") else "/tmp"
+    zip_path = f"{out_dir}/embedslr_ensemble_{int(time.time())}.zip"
+
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("meta.json", json.dumps({
             "query": query, "top_k": top_k, "aggregator": agg,
             "models": [m.__dict__ for m in models], "sizes": sizes_int,
         }, indent=2, ensure_ascii=False))
 
-        it_combo = progress.tqdm(combos, desc="Combinations") if progress else combos
-        for combo in it_combo:
-            cl = list(combo); tag = _combo_tag(cl)
+        for i, combo in enumerate(combos):
+            cl = list(combo)
+            tag = "__".join(m.label.replace("/","_") for m in cl)
+            _log(f"Combination {i+1}/{len(combos)}: {' + '.join(m.label for m in cl)}")
+
             ranked = run_ensemble(df, "combined_text", query, cl,
                                   top_k_per_model=top_k, aggregator=agg,
                                   precomputed=cache)
-            try:    groups = per_group_bibliometrics(ranked)
-            except: groups = pd.DataFrame()
             try:    report = full_report(ranked, path=None, top_n=top_k)
             except: report = "\n".join(str(t) for t in ranked[title_col].head(5))
 
+            vc = ranked["hit_count"].value_counts().sort_index(ascending=False)
             rows.append({"k": len(cl),
                          "combination": " + ".join(m.label for m in cl),
                          "n_records": len(ranked),
-                         "hit_dist": _hit_dist(ranked),
+                         "hit_dist": "; ".join(f"{int(k)}:{int(v)}" for k,v in vc.items() if k>0),
                          "top3": ", ".join(str(t) for t in ranked[title_col].head(3))})
 
             buf = io.StringIO(); ranked.to_csv(buf, index=False)
             zf.writestr(f"ranking_k{len(cl)}_{tag}.csv", buf.getvalue())
-            if not groups.empty:
-                buf = io.StringIO(); groups.to_csv(buf, index=False)
-                zf.writestr(f"groups_k{len(cl)}_{tag}.csv", buf.getvalue())
             zf.writestr(f"report_k{len(cl)}_{tag}.txt", report)
 
     summary = pd.DataFrame(rows).sort_values(["k","combination"]).reset_index(drop=True)
-    info = (f"**Done.** {len(combos)} combinations, sizes {sizes_int}, "
-            f"{time.time()-t0:.1f}s.  \nZIP: `{os.path.basename(zip_path)}`")
-    return summary, zip_path, info
+    elapsed = time.time() - t0
+    _log(f"Done. {len(combos)} combinations in {elapsed:.1f}s. ZIP: {zip_path}")
+    return summary, zip_path
 
 
 # =====================================================================
-#  TAB 2 — MCDA helpers
+#  Tab 2 — MCDA Validation  (uses rank_with_advanced_scoring directly)
 # =====================================================================
-def _prepare_mcda(df):
-    out = df.copy()
-    if 'distance_cosine' in out.columns:
-        out['semantic_sim'] = 1.0 - out['distance_cosine'].astype(float)
-    elif 'semantic_similarity' in out.columns:
-        out['semantic_sim'] = out['semantic_similarity'].astype(float)
-    else:
-        out['semantic_sim'] = np.random.RandomState(42).uniform(0.3, 0.9, len(out))
 
-    kw_col = next((c for c in ['Author Keywords','Authors Keywords',
-                                'Keywords','Index Keywords'] if c in out.columns), None)
-    if kw_col:
-        kls = [parse_keywords_cell(x) for x in out[kw_col]]
-        kf  = frequency_map(kls)
-        out['kw_sum'] = [per_item_topk_sum(k, kf, 5)[0] or np.nan for k in kls]
-    else:
-        out['kw_sum'] = np.nan
+def _build_scorer(df: pd.DataFrame, method: str, base_cfg: ScoringConfig):
+    """
+    Build a scoring function that wraps rank_with_advanced_scoring.
+    Returns: fn(df_subset, weights_dict) -> pd.Series of scores.
 
-    ref_col = next((c for c in ['References','Cited References'] if c in out.columns), None)
-    if ref_col:
-        rls = [parse_references_cell(x) for x in out[ref_col]]
-        rf  = frequency_map(rls)
-        out['ref_sum'] = [per_item_topk_sum(r, rf, 15)[0] or np.nan for r in rls]
-    else:
-        out['ref_sum'] = np.nan
+    This ensures we validate the EXACT same code that produces the ranking.
+    """
+    method_col = {"linear": "score_linear",
+                  "zscore": "score_zscore",
+                  "linear_plus": "score_linear_plus"}[method]
 
-    cc = next((c for c in ['Cited by','Cited By','Times Cited','Citations']
-               if c in out.columns), None)
-    out['citation_count'] = pd.to_numeric(out[cc], errors='coerce').fillna(0) if cc else 0.0
+    def scorer(df_in, w):
+        cfg = ScoringConfig(
+            method=method,
+            weights=w,
+            top_keywords=base_cfg.top_keywords,
+            top_references=base_cfg.top_references,
+            penalty_no_keywords=base_cfg.penalty_no_keywords,
+            penalty_no_references=base_cfg.penalty_no_references,
+            bonus_start_z=base_cfg.bonus_start_z,
+            bonus_full_z=base_cfg.bonus_full_z,
+            columns=base_cfg.columns,
+        )
+        result = rank_with_advanced_scoring(df_in, cfg)
+        return result.df[method_col]
 
-    for col in ['kw_sum', 'ref_sum']:
-        m = out[col].mean()
-        out[col] = out[col].fillna(m if not np.isnan(m) else 0.0)
-    return out
+    return scorer, method_col
 
 
-def _make_scorers(prep):
-    def l_fn(df_in, w):
-        src = df_in if 'semantic_sim' in df_in.columns else prep
-        P = len(src); w = {k: v/sum(w.values()) for k,v in w.items()}
-        cm = {'semantic': src['semantic_sim'], 'keywords': src['kw_sum'],
-              'references': src['ref_sum'], 'citations': src['citation_count']}
-        t = pd.Series(0.0, index=src.index)
-        for c, wt in w.items():
-            if c in cm: t += (P - (cm[c].rank(ascending=False, method='average') - 1)) * wt
-        return t
+def run_mcda_validation(csv_path, method, w_sem, w_kw, w_ref, w_cit,
+                        n_mc, n_bs, top_kw=5, top_ref=15,
+                        bonus_start_z=2.0, bonus_full_z=4.0,
+                        log_fn=None):
+    """
+    Run all 10 MCDA tests on selected method.
 
-    def z_fn(df_in, w):
-        src = df_in if 'semantic_sim' in df_in.columns else prep
-        w = {k: v/sum(w.values()) for k,v in w.items()}
-        cm = {'semantic': src['semantic_sim'], 'keywords': src['kw_sum'],
-              'references': src['ref_sum'], 'citations': src['citation_count']}
-        t = pd.Series(0.0, index=src.index)
-        for c, wt in w.items():
-            if c in cm:
-                r = cm[c].astype(float); sd = r.std(ddof=0)
-                t += ((r - r.mean())/sd if sd > 1e-12 else 0.0) * wt
-        return t
+    method: "linear" (L-Scoring), "zscore" (Z-Scoring), "linear_plus" (L-Scoring+)
+    Returns: (report_text, zip_path)
+    """
+    def _log(msg):
+        if log_fn: log_fn(msg)
 
-    def lp_fn(df_in, w, bsz=2.0, bfz=4.0):
-        src = df_in if 'semantic_sim' in df_in.columns else prep
-        P = len(src); w = {k: v/sum(w.values()) for k,v in w.items()}
-        cm = {'semantic': src['semantic_sim'], 'keywords': src['kw_sum'],
-              'references': src['ref_sum'], 'citations': src['citation_count']}
-        t = pd.Series(0.0, index=src.index)
-        b = pd.Series(0.0, index=src.index)
-        for c, wt in w.items():
-            if c in cm:
-                t += (P - (cm[c].rank(ascending=False, method='average') - 1)) * wt
-                r = cm[c].astype(float); sd = r.std(ddof=0)
-                if sd > 1e-12:
-                    z = (r - r.median())/sd
-                    f = ((z - bsz)/(bfz - bsz)).clip(lower=0.0); f[z >= bfz] = 1.0
-                    b += f * float(P)
-        return t + b.clip(upper=float(P))
-
-    return l_fn, z_fn, lp_fn
-
-
-def run_mcda_validation(csv_path, w_sem, w_kw, w_ref, w_cit,
-                        n_mc, n_bs, progress=None):
     t0 = time.time()
     df = pd.read_csv(csv_path, encoding='utf-8-sig')
-    prep = _prepare_mcda(df); n = len(prep)
+    n = len(df)
+    _log(f"Loaded {n} publications.")
 
-    raw = {'semantic': w_sem, 'keywords': w_kw, 'references': w_ref, 'citations': w_cit}
-    s = sum(raw.values()); bw = {k: v/s for k,v in raw.items()}
+    raw_w = {'semantic': w_sem, 'keywords': w_kw,
+             'references': w_ref, 'citations': w_cit}
+    s = sum(raw_w.values())
+    bw = {k: v/s for k,v in raw_w.items()}
     criteria = list(bw.keys())
 
-    l_fn, z_fn, lp_fn = _make_scorers(prep)
-    lp_wrap = lambda di, w: lp_fn(di, w)
+    METHOD_NAMES = {"linear": "L-Scoring", "zscore": "Z-Scoring",
+                    "linear_plus": "L-Scoring+"}
+    _log(f"Primary method: {METHOD_NAMES[method]}")
 
-    rankings = {
-        'L-Scoring':  l_fn(prep, bw),
-        'Z-Scoring':  z_fn(prep, bw),
-        'L-Scoring+': lp_wrap(prep, bw),
-    }
+    base_cfg = ScoringConfig(
+        method=method, weights=bw,
+        top_keywords=top_kw, top_references=top_ref,
+        bonus_start_z=bonus_start_z, bonus_full_z=bonus_full_z,
+    )
+
+    # Build scorer for SELECTED method (uses rank_with_advanced_scoring)
+    scorer, score_col = _build_scorer(df, method, base_cfg)
+
+    # Build scorers for ALL 3 methods (for cross-method comparison)
+    all_methods = ["linear", "zscore", "linear_plus"]
+    all_rankings = {}
+    for m in all_methods:
+        cfg_m = ScoringConfig(method=m, weights=bw,
+                              top_keywords=top_kw, top_references=top_ref,
+                              bonus_start_z=bonus_start_z, bonus_full_z=bonus_full_z)
+        res = rank_with_advanced_scoring(df, cfg_m)
+        col = {"linear": "score_linear", "zscore": "score_zscore",
+               "linear_plus": "score_linear_plus"}[m]
+        all_rankings[METHOD_NAMES[m]] = res.df[col]
+
     results = {}
 
-    def _p(msg):
-        if progress: progress(0, desc=msg)
-
-    _p("TEST 1/10: Weight Sensitivity...")
+    # T1
+    _log("TEST 1/10: Weight Sensitivity OAT...")
     results['weight_sensitivity'] = weight_sensitivity_oat(
-        l_fn, prep, bw,
+        scorer, df, bw,
         perturbations=(-0.50,-0.30,-0.20,-0.10,0.10,0.20,0.30,0.50))
 
-    _p("TEST 2/10: Criteria Removal...")
-    results['criteria_removal'] = criteria_removal_analysis(l_fn, prep, bw)
+    # T2
+    _log("TEST 2/10: Criteria Removal...")
+    results['criteria_removal'] = criteria_removal_analysis(scorer, df, bw)
 
-    _p("TEST 3/10: Cross-Method...")
-    cm_df, ws_mat = cross_method_correlation(rankings)
+    # T3
+    _log("TEST 3/10: Cross-Method Correlation...")
+    cm_df, ws_mat = cross_method_correlation(all_rankings)
     results['cross_method'] = (cm_df, ws_mat)
 
-    _p("TEST 4/10: Parameter Sensitivity...")
-    def _lp_bz(di, w, bz): return lp_fn(di, w, bsz=bz, bfz=bz+2.0)
+    # T4
+    _log("TEST 4/10: Parameter Sensitivity...")
+    def _param_bz(df_in, w, bz):
+        cfg = ScoringConfig(method="linear_plus", weights=w,
+                            top_keywords=top_kw, top_references=top_ref,
+                            bonus_start_z=bz, bonus_full_z=bz+2.0)
+        return rank_with_advanced_scoring(df_in, cfg).df["score_linear_plus"]
     results['parameter_sensitivity'] = {
         'bonus_start_z': parameter_sensitivity(
-            _lp_bz, prep, 'bonus_start_z',
-            [1.0,1.5,2.0,2.5,3.0,3.5], 2.0, bw)}
+            _param_bz, df, 'bonus_start_z',
+            [1.0,1.5,2.0,2.5,3.0,3.5], bonus_start_z, bw)}
 
-    _p("TEST 5/10: Precision/Recall...")
-    comb = (prep['semantic_sim'].rank(pct=True)*0.4
-            + prep['kw_sum'].rank(pct=True)*0.3
-            + prep['ref_sum'].rank(pct=True)*0.2
-            + prep['citation_count'].rank(pct=True)*0.1)
-    rel = set(comb[comb >= comb.quantile(0.80)].index.tolist())
+    # T5
+    _log("TEST 5/10: Precision / Recall / F1...")
+    # Ground truth: top 20% by combined rank across all criteria
+    result_all = rank_with_advanced_scoring(df, base_cfg)
+    combined_score = result_all.df[score_col]
+    threshold = combined_score.quantile(0.80)
+    relevant = set(combined_score[combined_score >= threshold].index.tolist())
+    _log(f"  Ground truth: {len(relevant)} articles (top 20%)")
     results['precision_recall'] = precision_recall_at_k(
-        rankings, rel, k_values=(5,10,20,50,100))
+        all_rankings, relevant, k_values=(5,10,20,50,100))
 
-    _p(f"TEST 6/10: Bootstrap (n={n_bs})...")
+    # T6
+    _log(f"TEST 6/10: Bootstrap Stability (n={n_bs})...")
     results['bootstrap'] = bootstrap_stability(
-        l_fn, prep, bw, n_bootstrap=n_bs, top_k_values=(5,10,20))
+        scorer, df, bw, n_bootstrap=n_bs, top_k_values=(5,10,20))
 
-    _p(f"TEST 7/10: Monte Carlo (n={n_mc})...")
+    # T7
+    _log(f"TEST 7/10: Monte Carlo Weights (n={n_mc})...")
     results['monte_carlo'] = monte_carlo_weights(
-        l_fn, prep, criteria, n_samples=n_mc, reference_weights=bw)
+        scorer, df, criteria, n_samples=n_mc, reference_weights=bw)
 
-    _p("TEST 8/10: Rank Reversal...")
+    # T8
+    _log("TEST 8/10: Rank Reversal...")
     results['rank_reversal'] = rank_reversal_analysis(
-        l_fn, prep, bw, n_removals=5, n_additions=3, top_k_monitor=20)
+        scorer, df, bw, n_removals=5, n_additions=3, top_k_monitor=20)
 
-    _p("TEST 9/10: Normalization...")
-    dm = prep[['semantic_sim','kw_sum','ref_sum','citation_count']].copy()
+    # T9
+    _log("TEST 9/10: Normalization Comparison...")
+    # Extract raw decision matrix from scored result
+    res = rank_with_advanced_scoring(df, base_cfg)
+    dm_cols = []
+    for c in criteria:
+        col = f"{c}_rank_pts"
+        if col in res.df.columns:
+            dm_cols.append(res.df[col])
+        else:
+            dm_cols.append(pd.Series(0.0, index=res.df.index))
+    dm = pd.concat(dm_cols, axis=1)
     dm.columns = criteria
     nd, ns = normalization_comparison(dm, bw)
     results['normalization'] = (nd, ns)
 
-    _p("TEST 10/10: Compromise Ranking...")
-    results['compromise'] = compromise_ranking(rankings)
+    # T10
+    _log("TEST 10/10: Compromise Ranking...")
+    results['compromise'] = compromise_ranking(all_rankings)
 
+    # Generate report
     report = generate_validation_report(results)
+    # Prepend method info
+    header = (f"Primary validated method: {METHOD_NAMES[method]}\n"
+              f"Weights: {bw}\n"
+              f"Publications: {n}\n\n")
+    report = header + report
 
-    _out = "/content" if os.path.isdir("/content") else "/tmp"
-    zip_path = f"{_out}/mcda_validation_{int(time.time())}.zip"
+    # Build ZIP
+    out_dir = "/content" if os.path.isdir("/content") else "/tmp"
+    zip_path = f"{out_dir}/mcda_validation_{METHOD_NAMES[method].replace('+','plus')}_{int(time.time())}.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("VALIDATION_REPORT.txt", report)
         zf.writestr("test1_weight_sensitivity.csv",
@@ -333,124 +331,253 @@ def run_mcda_validation(csv_path, w_sem, w_kw, w_ref, w_cit,
                      results['compromise'].agreement_with_methods.to_csv(index=False))
 
     elapsed = time.time() - t0
-    info = (f"**Done.** 10 tests on {n} articles in {elapsed:.1f}s.  \n"
-            f"Weights: sem={bw['semantic']:.2f} kw={bw['keywords']:.2f} "
-            f"ref={bw['references']:.2f} cit={bw['citations']:.2f}")
-    return report, zip_path, info
+    _log(f"Done. 10 tests in {elapsed:.1f}s. ZIP: {zip_path}")
+    return report, zip_path
 
 
 # =====================================================================
-#  GRADIO UI  — built only when run() is called, not at import time
+#  COLAB GUI  (ipywidgets — no Gradio)
 # =====================================================================
-def build_demo():
-    import gradio as gr
-
-    with gr.Blocks(title="EmbedSLR v3.0") as demo:
-        gr.Markdown("# EmbedSLR v3.0 — Wizard + MCDA Validation")
-
-        # ── TAB 1 ───────────────────────────────────────────────────
-        with gr.Tab("Multi-Embedding Wizard"):
-            gr.Markdown(
-                "**Scopus CSV -> models -> all 2/3/4/5 combinations -> ZIP**\n\n"
-                "Method: per-model cosine ranking -> top-K vote -> consensus "
-                "(hit_count desc, agg_distance asc, mean_rank asc)")
-            with gr.Row():
-                csv1 = gr.File(label="Scopus CSV", file_types=[".csv"],
-                               type="filepath")
-                q1 = gr.Textbox(label="Research query", lines=3,
-                    placeholder="e.g. Does blockchain affect customer loyalty?")
-            with gr.Row():
-                m1 = gr.CheckboxGroup(list(MODEL_CATALOG.keys()),
-                                      value=RECOMMENDED_DEFAULTS,
-                                      label="Models (min 2)")
-                s1 = gr.CheckboxGroup(["2","3","4","5"], value=["2","3","4"],
-                                      label="Combination sizes")
-            with gr.Row():
-                tk1 = gr.Slider(10, 200, 50, step=1, label="top-K per model")
-                ag1 = gr.Radio(["mean","min","median"], value="mean",
-                               label="Distance aggregation")
-            with gr.Accordion("API keys (only for cloud models)", open=False):
-                ok1 = gr.Textbox(label="OPENAI_API_KEY", type="password")
-                ck1 = gr.Textbox(label="COHERE_API_KEY", type="password")
-                nk1 = gr.Textbox(label="NOMIC_API_KEY", type="password")
-
-            b1 = gr.Button("Run Wizard", variant="primary")
-            out1_df  = gr.Dataframe(label="Summary", interactive=False)
-            out1_zip = gr.File(label="Download ZIP")
-            out1_md  = gr.Markdown()
-
-            def _go1(c, q, m, s, t, a, ok, ck, nk):
-                if not c: raise gr.Error("Upload CSV.")
-                if not q or not q.strip(): raise gr.Error("Enter query.")
-                return run_wizard(c, q.strip(), m, s, int(t), a, ok, ck, nk)
-
-            b1.click(_go1,
-                     [csv1,q1,m1,s1,tk1,ag1,ok1,ck1,nk1],
-                     [out1_df, out1_zip, out1_md])
-
-        # ── TAB 2 ───────────────────────────────────────────────────
-        with gr.Tab("MCDA Sensitivity & Robustness"):
-            gr.Markdown(
-                "**10 tests** evaluating multi-criteria ranking stability.\n\n"
-                "| # | Test | Category |\n"
-                "|---|------|----------|\n"
-                "| 1 | Weight Sensitivity OAT | Sensitivity |\n"
-                "| 2 | Criteria Removal | Sensitivity |\n"
-                "| 3 | Cross-Method Correlation | Agreement |\n"
-                "| 4 | Parameter Sensitivity | Sensitivity |\n"
-                "| 5 | Precision / Recall / F1 | Retrieval effectiveness |\n"
-                "| 6 | Bootstrap Stability | Robustness |\n"
-                "| 7 | Monte Carlo Weights | Global sensitivity |\n"
-                "| 8 | Rank Reversal | Robustness |\n"
-                "| 9 | Normalization Comparison | Robustness |\n"
-                "| 10 | Compromise Ranking | Agreement |\n\n"
-                "*Methodology: Wieckowski & Salabun (2023), "
-                "Wieckowski et al. (2025)*")
-
-            csv2 = gr.File(label="Scopus CSV (same or different)",
-                           file_types=[".csv"], type="filepath")
-            with gr.Row():
-                ws2 = gr.Slider(0.05, 0.80, 0.40, step=0.05, label="W semantic")
-                wk2 = gr.Slider(0.05, 0.80, 0.25, step=0.05, label="W keywords")
-                wr2 = gr.Slider(0.05, 0.80, 0.25, step=0.05, label="W references")
-                wc2 = gr.Slider(0.05, 0.80, 0.10, step=0.05, label="W citations")
-            with gr.Row():
-                mc2 = gr.Slider(100, 5000, 1000, step=100,
-                                label="Monte Carlo samples")
-                bs2 = gr.Slider(50, 2000, 500, step=50,
-                                label="Bootstrap iterations")
-
-            b2 = gr.Button("Run 10 MCDA Tests", variant="primary")
-            out2_txt = gr.Textbox(label="Validation Report", lines=35,
-                                  show_copy_button=True)
-            out2_zip = gr.File(label="Download results ZIP")
-            out2_md  = gr.Markdown()
-
-            def _go2(c, w1, w2, w3, w4, mc, bs):
-                if not c: raise gr.Error("Upload CSV.")
-                return run_mcda_validation(c, w1, w2, w3, w4, int(mc), int(bs))
-
-            b2.click(_go2,
-                     [csv2, ws2, wk2, wr2, wc2, mc2, bs2],
-                     [out2_txt, out2_zip, out2_md])
-
-    return demo
-
-
-# =====================================================================
-#  PUBLIC API
-# =====================================================================
-def run(share: bool = True, server_name: str = "0.0.0.0",
-        server_port: Optional[int] = None):
+def run():
     """
-    Launch EmbedSLR Wizard + MCDA in Colab::
+    Launch EmbedSLR interactive GUI in Google Colab.
 
+    Usage::
         from embedslr.colab_app import run
         run()
     """
-    demo = build_demo()
-    return demo.launch(share=share, server_name=server_name,
-                       server_port=server_port)
+    try:
+        import ipywidgets as widgets
+        from IPython.display import display, clear_output, HTML, FileLink
+    except ImportError:
+        print("ipywidgets or IPython not available. Use run_mcda_validation() directly.")
+        return
+
+    # ── common widgets ───────────────────────────────────────────────
+    log_output = widgets.Output(layout=widgets.Layout(
+        max_height='300px', overflow_y='auto',
+        border='1px solid #ccc', padding='6px'))
+
+    def _log(msg):
+        with log_output:
+            print(msg)
+
+    # ── FILE UPLOAD ──────────────────────────────────────────────────
+    upload_w = widgets.FileUpload(accept='.csv', multiple=False,
+                                  description='Upload CSV')
+    csv_path_state = [None]
+
+    def _on_upload(change):
+        if upload_w.value:
+            item = list(upload_w.value.values())[0] if isinstance(upload_w.value, dict) else upload_w.value[0]
+            content = item['content'] if isinstance(item, dict) else item.content
+            name = item['name'] if isinstance(item, dict) else item.name
+            out_dir = "/content" if os.path.isdir("/content") else "/tmp"
+            path = f"{out_dir}/{name}"
+            with open(path, 'wb') as f:
+                f.write(content)
+            csv_path_state[0] = path
+            _log(f"Uploaded: {name} -> {path}")
+    upload_w.observe(_on_upload, names='value')
+
+    # ═════════════════════════════════════════════════════════════════
+    #  TAB 2 — MCDA Validation
+    # ═════════════════════════════════════════════════════════════════
+
+    method_w = widgets.ToggleButtons(
+        options=[('L-Scoring (linear)', 'linear'),
+                 ('Z-Scoring (zscore)', 'zscore'),
+                 ('L-Scoring+ (linear+bonus)', 'linear_plus')],
+        value='linear_plus',
+        description='Method:',
+        style={'description_width': '80px'},
+        button_style='info')
+
+    w_sem = widgets.FloatSlider(value=0.40, min=0.05, max=0.80, step=0.05,
+                                 description='W semantic', readout_format='.2f')
+    w_kw  = widgets.FloatSlider(value=0.25, min=0.05, max=0.80, step=0.05,
+                                 description='W keywords', readout_format='.2f')
+    w_ref = widgets.FloatSlider(value=0.25, min=0.05, max=0.80, step=0.05,
+                                 description='W references', readout_format='.2f')
+    w_cit = widgets.FloatSlider(value=0.10, min=0.05, max=0.80, step=0.05,
+                                 description='W citations', readout_format='.2f')
+    mc_w = widgets.IntSlider(value=1000, min=100, max=5000, step=100,
+                              description='Monte Carlo')
+    bs_w = widgets.IntSlider(value=500, min=50, max=2000, step=50,
+                              description='Bootstrap')
+    bsz_w = widgets.FloatSlider(value=2.0, min=0.5, max=4.0, step=0.5,
+                                 description='bonus_start_z', readout_format='.1f')
+    bfz_w = widgets.FloatSlider(value=4.0, min=2.0, max=6.0, step=0.5,
+                                 description='bonus_full_z', readout_format='.1f')
+    topkw_w = widgets.IntSlider(value=5, min=1, max=20, step=1,
+                                 description='top_keywords')
+    topref_w = widgets.IntSlider(value=15, min=5, max=50, step=5,
+                                  description='top_references')
+
+    report_output = widgets.Output(layout=widgets.Layout(
+        max_height='500px', overflow_y='auto',
+        border='1px solid #ddd', padding='6px'))
+
+    btn_mcda = widgets.Button(description='Run 10 MCDA Tests',
+                               button_style='success',
+                               icon='play',
+                               layout=widgets.Layout(width='250px', height='40px'))
+
+    def _run_mcda(b):
+        log_output.clear_output()
+        report_output.clear_output()
+
+        if not csv_path_state[0]:
+            _log("ERROR: Upload a CSV first.")
+            return
+
+        btn_mcda.disabled = True
+        btn_mcda.description = "Running..."
+        try:
+            report, zip_path = run_mcda_validation(
+                csv_path=csv_path_state[0],
+                method=method_w.value,
+                w_sem=w_sem.value, w_kw=w_kw.value,
+                w_ref=w_ref.value, w_cit=w_cit.value,
+                n_mc=mc_w.value, n_bs=bs_w.value,
+                top_kw=topkw_w.value, top_ref=topref_w.value,
+                bonus_start_z=bsz_w.value, bonus_full_z=bfz_w.value,
+                log_fn=_log)
+            with report_output:
+                print(report)
+            _log(f"\nResults ZIP: {zip_path}")
+            try:
+                from google.colab import files
+                files.download(zip_path)
+            except:
+                _log("(Auto-download not available. File saved locally.)")
+        except Exception as e:
+            _log(f"ERROR: {e}")
+            import traceback
+            _log(traceback.format_exc())
+        finally:
+            btn_mcda.disabled = False
+            btn_mcda.description = "Run 10 MCDA Tests"
+
+    btn_mcda.on_click(_run_mcda)
+
+    mcda_panel = widgets.VBox([
+        widgets.HTML("<h3>MCDA Sensitivity & Robustness Analysis</h3>"
+                     "<p>Select which scoring method to validate, set weights and parameters.</p>"),
+        method_w,
+        widgets.HTML("<b>Criteria weights</b> (auto-normalized):"),
+        widgets.HBox([w_sem, w_kw]),
+        widgets.HBox([w_ref, w_cit]),
+        widgets.HTML("<b>Scoring parameters:</b>"),
+        widgets.HBox([topkw_w, topref_w]),
+        widgets.HBox([bsz_w, bfz_w]),
+        widgets.HTML("<b>Validation parameters:</b>"),
+        widgets.HBox([mc_w, bs_w]),
+        btn_mcda,
+        widgets.HTML("<b>Report:</b>"),
+        report_output,
+    ])
+
+    # ═════════════════════════════════════════════════════════════════
+    #  TAB 1 — Multi-Embedding Wizard
+    # ═════════════════════════════════════════════════════════════════
+
+    query_w = widgets.Textarea(
+        placeholder='e.g. Does blockchain affect customer loyalty?',
+        description='Query:', layout=widgets.Layout(width='95%', height='60px'))
+    models_w = widgets.SelectMultiple(
+        options=list(MODEL_CATALOG.keys()),
+        value=RECOMMENDED_DEFAULTS,
+        description='Models:',
+        layout=widgets.Layout(height='160px', width='95%'))
+    sizes_w = widgets.SelectMultiple(
+        options=['2','3','4','5'], value=['2','3','4'],
+        description='Sizes:', layout=widgets.Layout(height='100px'))
+    topk_w = widgets.IntSlider(value=50, min=10, max=200, step=1,
+                                description='top-K')
+    agg_w = widgets.ToggleButtons(options=['mean','min','median'], value='mean',
+                                   description='Aggregation:')
+    oai_w = widgets.Password(description='OpenAI key:',
+                              layout=widgets.Layout(width='400px'))
+    coh_w = widgets.Password(description='Cohere key:',
+                              layout=widgets.Layout(width='400px'))
+    nom_w = widgets.Password(description='Nomic key:',
+                              layout=widgets.Layout(width='400px'))
+
+    wizard_output = widgets.Output(layout=widgets.Layout(
+        max_height='400px', overflow_y='auto',
+        border='1px solid #ddd', padding='6px'))
+
+    btn_wizard = widgets.Button(description='Run Wizard',
+                                 button_style='primary', icon='play',
+                                 layout=widgets.Layout(width='200px', height='40px'))
+
+    def _run_wizard(b):
+        log_output.clear_output()
+        wizard_output.clear_output()
+
+        if not csv_path_state[0]:
+            _log("ERROR: Upload a CSV first.")
+            return
+        if not query_w.value.strip():
+            _log("ERROR: Enter a research query.")
+            return
+
+        btn_wizard.disabled = True
+        btn_wizard.description = "Running..."
+        try:
+            summary, zip_path = run_wizard(
+                csv_path=csv_path_state[0],
+                query=query_w.value.strip(),
+                model_labels=list(models_w.value),
+                sizes=list(sizes_w.value),
+                top_k=topk_w.value,
+                agg=agg_w.value,
+                ok=oai_w.value, ck=coh_w.value, nk=nom_w.value,
+                log_fn=_log)
+            with wizard_output:
+                display(summary)
+            _log(f"\nResults ZIP: {zip_path}")
+            try:
+                from google.colab import files
+                files.download(zip_path)
+            except:
+                _log("(Auto-download not available.)")
+        except Exception as e:
+            _log(f"ERROR: {e}")
+            import traceback
+            _log(traceback.format_exc())
+        finally:
+            btn_wizard.disabled = False
+            btn_wizard.description = "Run Wizard"
+
+    btn_wizard.on_click(_run_wizard)
+
+    wizard_panel = widgets.VBox([
+        widgets.HTML("<h3>Multi-Embedding Wizard</h3>"),
+        query_w,
+        widgets.HBox([models_w, sizes_w]),
+        widgets.HBox([topk_w, agg_w]),
+        widgets.HTML("<b>API keys</b> (only for cloud models):"),
+        oai_w, coh_w, nom_w,
+        btn_wizard,
+        widgets.HTML("<b>Results:</b>"),
+        wizard_output,
+    ])
+
+    # ═════════════════════════════════════════════════════════════════
+    #  TABS
+    # ═════════════════════════════════════════════════════════════════
+    tabs = widgets.Tab(children=[wizard_panel, mcda_panel])
+    tabs.set_title(0, 'Embedding Wizard')
+    tabs.set_title(1, 'MCDA Validation')
+
+    header = widgets.HTML(
+        "<h2>EmbedSLR v3.0</h2>"
+        "<p>Upload your Scopus CSV, then use either tab.</p>")
+
+    display(header, upload_w, tabs,
+            widgets.HTML("<b>Log:</b>"), log_output)
 
 
 if __name__ == "__main__":

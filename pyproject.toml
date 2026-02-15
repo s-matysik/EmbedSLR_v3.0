@@ -20,7 +20,7 @@ dependencies = [
   "cohere~=5.3",
   "requests>=2.31",
   "tqdm>=4.66",
-  "gradio>=4.0",
+  "ipywidgets>=8.1",
 ]
 
 [project.optional-dependencies]
