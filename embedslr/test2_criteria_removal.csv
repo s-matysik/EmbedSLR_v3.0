@@ -1,0 +1,8 @@
+type,step,removed,remaining,n_remaining,spearman,kendall,ws,top5_overlap,top10_overlap,top20_overlap
+sequential,1,citations,"semantic, keywords, references",3,0.9859359950248417,0.8992450687899596,0.9291923418763303,0.8,0.8,0.8
+sequential,2,keywords,"semantic, references",2,0.876368072075509,0.6915125044376441,0.7991448731910324,0.6,0.4,0.45
+sequential,3,references,semantic,1,0.6708306600938858,0.47748760565632725,0.7006841003145095,0.2,0.3,0.35
+individual_removal,0,semantic,"keywords, references, citations",3,0.7450843255059466,0.5431978013211001,0.7117151277072299,0.0,0.1,0.35
+individual_removal,0,keywords,"semantic, references, citations",3,0.9057034825786472,0.7318202897764962,0.8253307754628384,0.8,0.6,0.55
+individual_removal,0,references,"semantic, keywords, citations",3,0.9041849453184342,0.7326138280395517,0.8257009421446091,0.2,0.5,0.7
+individual_removal,0,citations,"semantic, keywords, references",3,0.9859359950248417,0.8992450687899596,0.9291923418763303,0.8,0.8,0.8

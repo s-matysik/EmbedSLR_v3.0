@@ -1,0 +1,6 @@
+parameter,value,is_baseline,spearman,kendall,ws,top5_overlap,top10_overlap,top20_overlap
+top_keywords_k,3,False,1.0,1.0,1.0,1.0,1.0,1.0
+top_keywords_k,5,True,1.0,1.0,1.0,1.0,1.0,1.0
+top_keywords_k,7,False,1.0,1.0,1.0,1.0,1.0,1.0
+top_keywords_k,10,False,1.0,1.0,1.0,1.0,1.0,1.0
+top_keywords_k,15,False,1.0,1.0,1.0,1.0,1.0,1.0
