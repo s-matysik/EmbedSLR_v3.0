@@ -615,9 +615,17 @@ def run_mcda_validation(csv_path, method="linear_plus",
 
 def run(csv_path: Optional[str] = None):
     """Launch EmbedSLR GUI in Colab."""
-    import ipywidgets as W
-    from IPython.display import display, HTML
+    # Enable custom widgets FIRST
+    try:
+        from google.colab import output as colab_output
+        colab_output.enable_custom_widget_manager()
+    except Exception:
+        pass
 
+    import ipywidgets as W
+    from IPython.display import display, clear_output
+
+    # --- File upload (separate phase) ---
     if not csv_path or not os.path.isfile(str(csv_path)):
         try:
             from google.colab import files
@@ -628,6 +636,9 @@ def run(csv_path: Optional[str] = None):
             csv_path = f"/content/{list(uploaded.keys())[0]}"
         except ImportError:
             print("Use: run('/path/file.csv')"); return
+
+    # Clear upload output so widgets render clean
+    clear_output(wait=True)
 
     try:
         n_total = len(pd.read_csv(csv_path, encoding="utf-8-sig"))
