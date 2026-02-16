@@ -828,8 +828,8 @@ def run(csv_path: Optional[str] = None):
     btn_rank.on_click(_on_rank)
     btn_test.on_click(_on_test)
 
-    # --- Layout ---
-    display(HTML(f"""
+    # --- Layout (single VBox for reliable Colab rendering) ---
+    header_html = W.HTML(f"""
     <h2>EmbedSLR v3.0</h2>
     <table><tr><td><b>File:</b></td><td><code>{os.path.basename(csv_path)}</code></td></tr>
     <tr><td><b>Publications:</b></td><td>{n_total}</td></tr>
@@ -837,34 +837,43 @@ def run(csv_path: Optional[str] = None):
     <hr>
     <h4>Research Problem</h4>
     <small>Required for semantic embeddings (if no distance_cosine in CSV) and for LLM validation.
-    Embeddings are computed for the research problem AND each article (title + abstract).</small>"""))
-    display(rp_w)
+    Embeddings are computed for the research problem AND each article (title + abstract).</small>""")
 
-    display(HTML("<h4>Primary MCDA method</h4>"))
-    display(method_w)
+    method_html = W.HTML("<h4>Primary MCDA method</h4>")
+    methods_html = W.HTML(
+        "<h4>Methods to validate</h4>"
+        "<small>Select 1 = single-method (T3/T10 skipped). "
+        "Select 2-3 = cross-method correlation (T3) + compromise ranking (T10).</small>")
+    weights_html = W.HTML("<h4>Criteria weights</h4><small>Auto-normalized</small>")
+    params_html = W.HTML("<h4>Parameters</h4>")
+    llm_html = W.HTML(
+        "<h4>LLM Validation (T5b)</h4>"
+        "<small>Optional: LLMs evaluate top-K articles for semantic relevance "
+        "and research importance. Requires research problem + API keys.</small>")
+    output_html = W.HTML("<h4>Output</h4>")
+    hr_html = W.HTML("<hr>")
 
-    display(HTML("<h4>Methods to validate</h4>"
-                 "<small>Select 1 = single-method (T3/T10 skipped). "
-                 "Select 2-3 = cross-method correlation (T3) + compromise ranking (T10).</small>"))
-    display(methods_w)
-
-    display(HTML("<h4>Criteria weights</h4><small>Auto-normalized</small>"))
-    display(w_sem_slider, w_kw, w_ref, w_cit)
-
-    display(HTML("<h4>Parameters</h4>"))
-    display(W.HBox([bsz_w, bfz_w]))
-    display(W.HBox([mc_w, bs_w]))
-
-    display(HTML("<h4>LLM Validation (T5b)</h4>"
-                 "<small>Optional: LLMs evaluate top-K articles for semantic relevance "
-                 "and research importance. Requires research problem + API keys.</small>"))
-    display(llm_toggle)
-    display(llm_keys_box)
-
-    display(HTML("<hr>"))
-    display(W.HBox([btn_rank, btn_test]))
-    display(HTML("<h4>Output</h4>"))
-    display(out_area)
+    full_ui = W.VBox([
+        header_html,
+        rp_w,
+        method_html,
+        method_w,
+        methods_html,
+        methods_w,
+        weights_html,
+        w_sem_slider, w_kw, w_ref, w_cit,
+        params_html,
+        W.HBox([bsz_w, bfz_w]),
+        W.HBox([mc_w, bs_w]),
+        llm_html,
+        llm_toggle,
+        llm_keys_box,
+        hr_html,
+        W.HBox([btn_rank, btn_test]),
+        output_html,
+        out_area,
+    ])
+    display(full_ui)
 
 
 if __name__ == "__main__":
