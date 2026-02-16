@@ -646,9 +646,9 @@ def run(csv_path: Optional[str] = None):
         value="",
         placeholder="e.g. How does AI impact customer experience and to what extent "
                     "does its use in marketing improve satisfaction and loyalty?",
-        description="Research problem:",
-        layout=W.Layout(width="100%", height="80px"),
-        style=sty)
+        description="",
+        layout=W.Layout(width="100%", height="100px",
+                        border="2px solid #2196F3", padding="4px"))
 
     # --- Primary MCDA method ---
     method_w = W.RadioButtons(
@@ -690,29 +690,34 @@ def run(csv_path: Optional[str] = None):
                            description="bonus_full_z", readout_format=".1f", style=sty)
 
     # --- LLM API keys ---
-    llm_toggle = W.Checkbox(value=False, description="Enable LLM Validation (T5b)",
-                             style=sty)
+    llm_toggle = W.Checkbox(value=False,
+                             description="✅ Enable LLM Validation (T5b)",
+                             indent=False,
+                             style={"description_width": "auto"},
+                             layout=W.Layout(width="auto", margin="10px 0"))
     llm_topk_w = W.IntSlider(value=20, min=5, max=50, step=5,
-                              description="LLM top-K", style=sty)
-    key_openai = W.Text(value="", placeholder="sk-...", description="OpenAI key:", style=sty,
+                              description="LLM top-K:", style=sty)
+    key_openai = W.Text(value="", placeholder="sk-proj-...", description="OpenAI:", style=sty,
                          layout=W.Layout(width="100%"))
-    key_anthropic = W.Text(value="", placeholder="sk-ant-...", description="Anthropic key:", style=sty,
+    key_anthropic = W.Text(value="", placeholder="sk-ant-...", description="Anthropic:", style=sty,
                             layout=W.Layout(width="100%"))
-    key_google = W.Text(value="", placeholder="AIza...", description="Google key:", style=sty,
+    key_google = W.Text(value="", placeholder="AIza...", description="Google:", style=sty,
                          layout=W.Layout(width="100%"))
-    key_deepseek = W.Text(value="", placeholder="sk-...", description="DeepSeek key:", style=sty,
+    key_deepseek = W.Text(value="", placeholder="sk-...", description="DeepSeek:", style=sty,
                            layout=W.Layout(width="100%"))
-    key_xai = W.Text(value="", placeholder="xai-...", description="xAI key:", style=sty,
+    key_xai = W.Text(value="", placeholder="xai-...", description="xAI:", style=sty,
                       layout=W.Layout(width="100%"))
-    key_kimi = W.Text(value="", placeholder="sk-...", description="Kimi key:", style=sty,
+    key_kimi = W.Text(value="", placeholder="sk-...", description="Kimi:", style=sty,
                        layout=W.Layout(width="100%"))
 
-    llm_box = W.VBox([llm_topk_w, key_openai, key_anthropic, key_google,
-                       key_deepseek, key_xai, key_kimi],
-                      layout=W.Layout(display="none"))
+    llm_keys_box = W.VBox([llm_topk_w, key_openai, key_anthropic, key_google,
+                            key_deepseek, key_xai, key_kimi],
+                           layout=W.Layout(display="none",
+                                           border="1px solid #4CAF50",
+                                           padding="8px", margin="5px 0"))
 
     def _toggle_llm(change):
-        llm_box.layout.display = "" if change["new"] else "none"
+        llm_keys_box.layout.display = "" if change["new"] else "none"
     llm_toggle.observe(_toggle_llm, names="value")
 
     # --- Output ---
@@ -854,7 +859,7 @@ def run(csv_path: Optional[str] = None):
                  "<small>Optional: LLMs evaluate top-K articles for semantic relevance "
                  "and research importance. Requires research problem + API keys.</small>"))
     display(llm_toggle)
-    display(llm_box)
+    display(llm_keys_box)
 
     display(HTML("<hr>"))
     display(W.HBox([btn_rank, btn_test]))
